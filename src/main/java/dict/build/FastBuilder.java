@@ -10,6 +10,11 @@ import com.google.common.base.Charsets;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Maps;
 import com.google.common.io.Files;
+import com.googlecode.concurrenttrees.radix.ConcurrentRadixTree;
+import com.googlecode.concurrenttrees.radix.RadixTree;
+import com.googlecode.concurrenttrees.radix.node.concrete.DefaultCharArrayNodeFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 
@@ -17,6 +22,8 @@ import com.google.common.io.Files;
  * 
  */
 public class FastBuilder {
+
+	private static final Logger LOG = LoggerFactory.getLogger(FastBuilder.class);
 
 	/**
 	 * Let's limit maximum memory used for pre-sorting when invoked from
@@ -155,6 +162,7 @@ public class FastBuilder {
 					}
 				}
 			}
+			writer.close();
 			sortFile(ngramFile, ngramSort);
 
 			try(BufferedReader nsr = Files.newReader(ngramSort, Charsets.UTF_8)) {
@@ -209,6 +217,7 @@ public class FastBuilder {
 						}
 					}
 				}
+				freqWriter.close();
 			}
 			
 			sortFile(ngramfreq, ngramFreqSort);
@@ -257,6 +266,7 @@ public class FastBuilder {
 					}
 				}
 			}
+			writer.close();
 			System.out.println("gen sorting...");
 			sortFile(ngramFile, ngramSort);
 			
@@ -312,6 +322,7 @@ public class FastBuilder {
 						}
 					}
 				}
+				freqWriter.close();
 			}
 			
 			sortFile(ngramfreq, ngramfreqSort);
@@ -346,6 +357,7 @@ public class FastBuilder {
 			while (null != (line = lr.readLine())) {
 				mw.write(line + "\n");
 			}
+			mw.close();
 
 			sortFile(mergeTmp, mergeTmp2);
 
@@ -386,6 +398,7 @@ public class FastBuilder {
 				mf.write(seg1[0] + "\t" + freq + "\t" + e + "\n");
 
 			}
+			mf.close();
 
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
@@ -408,10 +421,11 @@ public class FastBuilder {
 
 	public void extractWords(String freqFile, String entropyFile) {
 
+		LOG.info("start to extract words");
 		
 		TreeMap<String, double[]> posProp = this.loadPosprop();
-		
-		TernaryTree freq = new TernaryTree();
+
+		RadixTree<Integer> tree = new ConcurrentRadixTree<Integer>(new DefaultCharArrayNodeFactory());
 
 		File ffile = new File(freqFile);
 		File efile = new File(entropyFile);
@@ -427,11 +441,20 @@ public class FastBuilder {
 			while (null != (line = fr.readLine())) {
 				String[] seg = line.split("\t");
 				if (seg.length < 3) continue;
-				freq.insert(seg[0], Integer.parseInt(seg[1]));
+				tree.put(seg[0], Integer.parseInt(seg[1]));
 				total += 1;
+				if (total % 1000 == 0) {
+					LOG.info("load freq to radix tree done: " + total);
+				}
 			}
+			LOG.info("build freq TST done!");
 			line = null;
+			int cnt = 0;
 			while (null != (line = er.readLine())) {
+				cnt += 1;
+				if (cnt % 1000 == 0) {
+					LOG.info("extract words done: " + cnt);
+				}
 				String[] seg = line.split("\t");
 				if (3 != seg.length)
 					continue;
@@ -445,10 +468,16 @@ public class FastBuilder {
 				for (int s = 1; s < w.length(); ++s) {
 					String lw = w.substring(0, s);
 					String rw = w.substring(s);
-					
-					int lf = freq.search(lw);
-					int rf = freq.search(rw);
-					
+					Integer lfObj = tree.getValueForExactKey(lw);
+					Integer rfObj = tree.getValueForExactKey(rw);
+					long lf = -1;
+					long rf = -1;
+					if (null != lfObj) {
+						lf = lfObj.intValue();
+					}
+					if (null != rfObj) {
+						rf = rfObj.intValue();
+					}
 					if (-1 == lf || -1 == rf) continue;
 					
 					long ff = lf * rf;
@@ -464,23 +493,25 @@ public class FastBuilder {
 				if (pmi < 1 || e < 2 || pp < 0.1)
 					continue;
 				ww.write(w + "\t" + f + "\t" + pmi + "\t" + e + "\t"  + pp + "\n");
+
 			}
-			
+			ww.close();
+			LOG.info("start to sort extracted words");
 			try {
-				long availMem = Runtime.getRuntime().maxMemory()
-						- (40 * 1024 * 1024);
+				long availMem = Runtime.getRuntime().maxMemory() - (2048 * 1024 * 1024);
 				long maxMem = (availMem >> 1);
 				if (maxMem > MAX_HEAP_FOR_PRESORT) {
 					maxMem = MAX_HEAP_FOR_PRESORT;
 				} else if (maxMem < MIN_HEAP_FOR_PRESORT) {
 					maxMem = MIN_HEAP_FOR_PRESORT;
 				}
-				final SplitFileSorter sorter = new SplitFileSorter(
-						new SortConfig().withMaxMemoryUsage(maxMem));
+				final SplitFileSorter sorter = new SplitFileSorter(new SortConfig().withMaxMemoryUsage(maxMem));
 				sorter.sort(new FileInputStream(wfile), new PrintStream(wsfile));
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
+
+			LOG.info("all done");
 			
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
